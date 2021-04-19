@@ -1,0 +1,15 @@
+version: '2.3'
+
+services: 
+  teler:
+    container_name: teler_test
+    image: "dr34d/teler:latest"
+    volumes: 
+      - "./teler.yaml:/teler.yaml"
+      - "./access.log:/access.log"
+      - "/home/kali/.cache/teler-resources/:/.cache/teler-resources/"
+      # - "./start.sh:/start.sh"
+      - "./result.json:/result.json"
+    entrypoint: /bin/sh
+    # command: /start.sh
+    tty: true

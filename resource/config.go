@@ -22,12 +22,12 @@ func init() {
 			Exclude  bool
 		}{
 			{
-				Category: "Common Web Attack",
-				Filename: "common-web-attacks.json",
-			},
-			{
 				Category: "CVE",
 				Filename: "cves.json",
+			},
+			{
+				Category: "Common Web Attack",
+				Filename: "common-web-attacks.json",
 			},
 			{
 				Category: "Bad IP Address",

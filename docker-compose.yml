@@ -1,0 +1,15 @@
+version: '2.3'
+
+services:
+  teler:
+    container_name: teler_test1
+    image: dr34d/teler
+#    volumes:
+#      - "./teler.yaml:/teler.yaml"
+#      - "./access.log:/access.log"
+#      - "./teler-resources/:/.cache/teler-resources/"
+#      - "./start.sh:/start.sh"
+#      - "./result.json:/result.json"
+    entrypoint: /bin/sh
+#    command: /start.sh
+    tty: true

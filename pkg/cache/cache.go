@@ -56,16 +56,18 @@ func Check() bool {
 		return false
 	}
 
-	updated, err := time.Parse(time.RFC3339, cache.UpdatedAt)
-	if err != nil {
-		return false
-	}
+	// updated, err := time.Parse(time.RFC3339, cache.UpdatedAt)
+	// _, err := time.Parse(time.RFC3339, cache.UpdatedAt)
+	// if err != nil {
+	// 	return false
+	// }
 
-	if time.Since(updated).Hours() < 24 {
-		return true
-	}
+	// if time.Since(updated).Hours() < 24 {
+	// 	return true
+	// }
 
-	return false
+	// return false
+	return true
 }
 
 // Update latest resources being cached

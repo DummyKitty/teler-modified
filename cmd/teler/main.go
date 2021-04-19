@@ -1,9 +1,9 @@
 package main
 
 import (
-	"runtime"
-
 	"ktbs.dev/teler/internal/runner"
+
+	"runtime"
 )
 
 func init() {

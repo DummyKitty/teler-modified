@@ -8,12 +8,14 @@ import (
 	"os"
 	"regexp"
 
+
 	"github.com/acarl005/stripansi"
 	"github.com/logrusorgru/aurora"
 	"github.com/projectdiscovery/gologger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/remeh/sizedwaitgroup"
 	"github.com/satyrius/gonx"
+
 	"ktbs.dev/teler/common"
 	"ktbs.dev/teler/internal/alert"
 	"ktbs.dev/teler/pkg/errors"
@@ -49,8 +51,8 @@ func New(options *common.Options) {
 	jobs := make(chan *gonx.Entry)
 	gologger.Info().Msg("Analyzing...")
 
-	// con := options.Concurrency
-	con := 1
+	con := options.Concurrency
+	//con := 1
 	swg := sizedwaitgroup.New(con)
 	for i := 0; i < con; i++ {
 		swg.Add()
@@ -61,12 +63,14 @@ func New(options *common.Options) {
 				threat, obj := teler.Analyze(options, log)
 				// threat, obj := teler.Analyze(options, log)
 
+				if !threat{
+					obj["category"] = "None"
+					obj["description"] = ""
+				}
+
 				// if threat {
 				if metric {
 					metrics.GetThreatTotal.WithLabelValues(obj["category"]).Inc()
-				}
-				if !threat {
-					obj["category"] = "None"
 				}
 
 				if options.JSON {

@@ -1,6 +1,9 @@
 package teler
 
 import (
+	"io/ioutil"
+	"ktbs.dev/teler/internal/libinjection"
+	"net/http"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -12,14 +15,77 @@ import (
 	"ktbs.dev/teler/common"
 	"ktbs.dev/teler/pkg/matchers"
 	"ktbs.dev/teler/pkg/metrics"
+	"ktbs.dev/teler/pkg/requests"
 	"ktbs.dev/teler/resource"
 )
+
+func Libinjection_judge(s string)(bool,string,string){
+	s = "http://www.test.com/?" + s
+	req, err := url.ParseRequestURI(s)
+	if err != nil{
+		found, fingerprint := libinjection.IsSQLi(s)
+		if found {
+			return found, fingerprint,"sql injection"
+		}
+
+		found, fingerprint = libinjection.IsXSS(s)
+		if found {
+			return found, fingerprint,"XSS"
+		}
+		return false,"",""
+	}
+
+	query := req.Query()
+	for _,q := range query {
+		qs := strings.Join(q, "")
+		found, fingerprint := libinjection.IsSQLi(qs)
+		if found {
+			return found, fingerprint,"sql injection"
+		}
+
+		found, fingerprint = libinjection.IsXSS(qs)
+		if found {
+			return found, fingerprint,"XSS"
+		}
+	}
+	return false,"",""
+}
+
+
+func ml_analysis(s string)(bool,string){
+	req,err := http.NewRequest("GET","http://python:64290"+s,nil)
+	client := requests.Client()
+
+	if err != nil {
+		return false,""
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return false,""
+	}
+	content, errCon := ioutil.ReadAll(res.Body)
+	if errCon != nil {
+		return false,""
+	}
+
+	v,_ := fastjson.Parse(string(content))
+	message:=string(v.GetStringBytes("message"))
+	if (message == "MALICIOUS"){
+		return true,"机器学习引擎检测到攻击"
+	}else {
+		return false,""
+	}
+
+}
 
 // Analyze logs from threat resources
 func Analyze(options *common.Options, logs *gonx.Entry) (bool, map[string]string) {
 	var match, status bool
 
 	log := make(map[string]string)
+
+	// mainMapB := make(map[string]map[string]string)
+
 	// 初始化字典
 	rsc := resource.Get()
 	// rsc存放着teler_resource中的内容
@@ -29,13 +95,17 @@ func Analyze(options *common.Options, logs *gonx.Entry) (bool, map[string]string
 		log[field.String()] = fields.MapIndex(field).String()
 	}
 
+	log["Bad Crawler"] = "False"
+	log["Bad IP"] = "False"
+	log["Bad Referrer"] = "False"
+	log["category"] = "None"
+	log["description"] = ""
+
 	for i := 0; i < len(rsc.Threat); i++ {
 		threat := reflect.ValueOf(&rsc.Threat[i]).Elem()
 		cat := threat.FieldByName("Category").String()
 		con := threat.FieldByName("Content").String()
 		exc := threat.FieldByName("Exclude").Bool()
-
-		log["category"] = cat
 
 		if exc {
 			continue
@@ -62,74 +132,136 @@ func Analyze(options *common.Options, logs *gonx.Entry) (bool, map[string]string
 
 					cwa, _ := fastjson.Parse(con)
 					for _, v := range cwa.GetArray("filters") {
-						log["category"] = cat + ": " + string(v.GetStringBytes("description"))
-						log["element"] = "request_uri"
+
+						//log["category"] = cat + ": " + string(v.GetStringBytes("description"))
 						quote := regexp.QuoteMeta(dec)
 
-						match = matchers.IsMatch(
+						match_web := matchers.IsMatch(
 							string(v.GetStringBytes("rule")),
 							quote,
 						)
 
-						if match {
+						if match_web {
+							log["category"] = cat
+							log["description"] = string(v.GetStringBytes("description"))
+							log["element"] = "request_uri"
 							metrics.GetCWA.WithLabelValues(
 								log["category"],
 								log["remote_addr"],
 								log["request_uri"],
 								log["status"],
 							).Inc()
+							tags := ""
+							for vv := range v.GetArray("tags", "tag") {
+								ss := v.GetArray("tags", "tag")[vv].String()
+								ss = ss[1:len(ss)-1]
+								tags += ss
+								tags += ","
+							}
+							match=true
+							log["attack_type"] = tags
+							break
+						}
 
+						if !match{
+							found, fingerprint,attack_type := Libinjection_judge(dec)
+							if found{
+								log["description"] = fingerprint
+								log["category"] = "Common Web Attack"
+								match = true
+								log["attack_type"] = attack_type
+							}else{
+								found,fingerprint:= ml_analysis("?"+query.Encode())
+								if found{
+									log["description"] = fingerprint
+									log["attack_type"] = "未知"
+									log["category"] = "Common Web Attack"
+									match = true
+								}
+							}
+						}
+
+						if match{
 							break
 						}
 					}
-					if match {
+
+					if match{
 						break
 					}
+
 				}
+
 			} else {
-				query, err = url.ParseQuery(log["post_data"])
+				//query, err = url.ParseQuery(log["post_data"])
+				query,_:= url.QueryUnescape(log["post_data"])
+
 				if err != nil {
 					break
 				}
-				if len(query) > 0 {
-					for p, q := range query {
-						dec, err := url.QueryUnescape(strings.Join(q, ""))
-						if err != nil {
-							continue
-						}
+				//log["post_data"] = query
+				if len(query) > 0 && len(query) < 3000{
+					cwa, _ := fastjson.Parse(con)
+					for _, v := range cwa.GetArray("filters") {
+						//log["category"] = cat + ": " + string(v.GetStringBytes("description"))
 
-						if isWhitelist(options, p+"="+dec) {
-							continue
-						}
+						// dec, err := url.QueryUnescape(strings.Join(query, ""))
+						quote := regexp.QuoteMeta(query)
 
-						cwa, _ := fastjson.Parse(con)
-						for _, v := range cwa.GetArray("filters") {
-							log["category"] = cat + ": " + string(v.GetStringBytes("description"))
+						match_web := matchers.IsMatch(
+							string(v.GetStringBytes("rule")),
+							quote,
+						)
+
+						if match_web {
+							log["category"] = cat
+							log["description"] = string(v.GetStringBytes("description"))
 							log["element"] = "post_data"
-							quote := regexp.QuoteMeta(dec)
 
-							match = matchers.IsMatch(
-								string(v.GetStringBytes("rule")),
-								quote,
-							)
-
-							if match {
-								metrics.GetCWA.WithLabelValues(
-									log["category"],
-									log["remote_addr"],
-									log["request_uri"],
-									log["status"],
-								).Inc()
-
-								break
+							metrics.GetCWA.WithLabelValues(
+								log["category"],
+								log["remote_addr"],
+								log["request_uri"],
+								log["status"],
+								// log[""]
+							).Inc()
+							match=true
+							//println(string(v.GetArray("tags","tag")))
+							tags := ""
+							for vv := range v.GetArray("tags", "tag") {
+								ss := v.GetArray("tags", "tag")[vv].String()
+								ss = ss[1:len(ss)-1]
+								tags += ss
+								tags += "|"
 							}
-
-						}
-						if match {
+							log["attack_type"] = tags
 							break
 						}
+
 					}
+
+					if !match{
+
+						found, fingerprint,attack_type := Libinjection_judge(query)
+						if found{
+							log["description"] = fingerprint
+							log["category"] = "Common Web Attack"
+							match = true
+							log["attack_type"] = attack_type
+						}else{
+							found,fingerprint:= ml_analysis("?data="+query)
+							if found{
+								log["description"] = fingerprint
+								log["attack_type"] = "未知"
+								log["category"] = "Common Web Attack"
+								match = true
+							}
+						}
+					}
+
+
 				}
+
 
 			}
 		case "CVE":
@@ -145,8 +277,6 @@ func Analyze(options *common.Options, logs *gonx.Entry) (bool, map[string]string
 			log["element"] = "request_uri"
 			cves, _ := fastjson.Parse(con)
 			for _, cve := range cves.GetArray("templates") {
-				log["category"] = strings.ToTitle(string(cve.GetStringBytes("id")))
-
 				for _, r := range cve.GetArray("requests") {
 					method := string(r.GetStringBytes("method"))
 					if method != log["request_method"] {
@@ -202,14 +332,16 @@ func Analyze(options *common.Options, logs *gonx.Entry) (bool, map[string]string
 								log["request_uri"],
 								log["status"],
 							).Inc()
-
+							log["category"] = "CVE"
+							log["description"] = strings.ToTitle(string(cve.GetStringBytes("id")))
+							log["attack_type"] = log["description"]
 							break
 						}
 					}
 				}
 
 				if match {
-					break
+					return match,log
 				}
 			}
 		case "Bad Crawler":
@@ -220,16 +352,17 @@ func Analyze(options *common.Options, logs *gonx.Entry) (bool, map[string]string
 			}
 
 			for _, pat := range strings.Split(con, "\n") {
-				if match = matchers.IsMatch(pat, log["http_user_agent"]); match {
+				if match_bad_crawler := matchers.IsMatch(pat, log["http_user_agent"]); match_bad_crawler {
 					metrics.GetBadCrawler.WithLabelValues(
 						log["remote_addr"],
 						log["http_user_agent"],
 						log["status"],
 					).Inc()
-
+					log["Bad Crawler"] = "True";
 					break
 				}
 			}
+
 		case "Bad IP Address":
 			log["element"] = "remote_addr"
 
@@ -238,10 +371,12 @@ func Analyze(options *common.Options, logs *gonx.Entry) (bool, map[string]string
 			}
 
 			ip := "(?m)^" + log["remote_addr"]
-			match = matchers.IsMatch(ip, con)
-			if match {
+			match_bad_ip := matchers.IsMatch(ip, con)
+			if match_bad_ip {
 				metrics.GetBadIP.WithLabelValues(log["remote_addr"]).Inc()
+				log["Bad IP"] = "True";
 			}
+
 		case "Bad Referrer":
 			log["element"] = "http_referer"
 			if isWhitelist(options, log["http_referer"]) {
@@ -258,10 +393,13 @@ func Analyze(options *common.Options, logs *gonx.Entry) (bool, map[string]string
 			}
 			ref := "(?m)^" + req.Host
 
-			match = matchers.IsMatch(ref, con)
-			if match {
+			match_bad_referer := matchers.IsMatch(ref, con)
+			if match_bad_referer {
 				metrics.GetBadReferrer.WithLabelValues(log["http_referer"]).Inc()
+				log["Bad Referrer"] = "True"
+				//return match, log
 			}
+
 		case "Directory Bruteforce":
 			log["element"] = "request_uri"
 
@@ -275,23 +413,27 @@ func Analyze(options *common.Options, logs *gonx.Entry) (bool, map[string]string
 			if err != nil {
 				break
 			}
-
+			match_db := false
 			if req.Path != "/" {
-				match = matchers.IsMatch(trimFirst(req.Path), con)
+				match_db = matchers.IsMatch(trimFirst(req.Path), con)
 			}
 
-			if match {
+			if match_db && (!match) {
 				metrics.GetDirBruteforce.WithLabelValues(
 					log["remote_addr"],
 					log["request_uri"],
 					log["status"],
 				).Inc()
+				log["category"] = "Directory Bruteforce"
+				log["description"] = "检测到路径爆破"
+				log["attack_type"] = req.Path
+				match = true
 			}
 		}
 
-		if match {
-			return match, log
-		}
+		// if match {
+		// 	return match, log
+		// }
 	}
 
 	return match, log
